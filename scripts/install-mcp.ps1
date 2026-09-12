@@ -1,0 +1,171 @@
+<#
+.SYNOPSIS
+    Installs MCP servers, Superpowers plugin, global rules, and optional document CLIs.
+#>
+[CmdletBinding()]
+param (
+    [string]$ConfigDir = "$env:USERPROFILE\.gemini\config",
+    [string]$TemplatePath = "",
+    [string]$RulesSource = "",
+    [switch]$InstallMarkItDown,
+    [switch]$InstallMinerU,
+    [switch]$NonInteractive
+)
+
+function Set-ContentUtf8NoBom {
+    param (
+        [Parameter(Mandatory=$true)] [string]$Path,
+        [Parameter(Mandatory=$true)] [string]$Content
+    )
+    $dir = Split-Path -Path $Path -Parent
+    if ($dir -and (-not (Test-Path $dir))) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($TemplatePath) -or (-not (Test-Path $TemplatePath))) {
+    $TemplatePath = Join-Path $repoRoot "config\mcp_config.template.json"
+}
+if ([string]::IsNullOrWhiteSpace($RulesSource) -or (-not (Test-Path $RulesSource))) {
+    $RulesSource = Join-Path $repoRoot "config\GEMINI.md"
+}
+
+if (-not (Test-Path $ConfigDir)) {
+    New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
+}
+
+# --- 1. MCP Configuration Merge ---
+Write-Host "`n--- Configuring MCP Servers ---" -ForegroundColor Cyan
+$targetMcpConfig = Join-Path $ConfigDir "mcp_config.json"
+$templateJson = Get-Content $TemplatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+$existingJson = $null
+if (Test-Path $targetMcpConfig) {
+    try {
+        $existingJson = Get-Content $targetMcpConfig -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Host "[INFO] Found existing mcp_config.json, merging settings..." -ForegroundColor Gray
+    } catch {
+        Write-Host "[WARN] Existing mcp_config.json could not be parsed. Starting fresh." -ForegroundColor Yellow
+    }
+}
+
+if ($null -eq $existingJson) {
+    $existingJson = [PSCustomObject]@{
+        mcpServers = [PSCustomObject]@{}
+    }
+}
+
+# Preserve or set GitHub PAT (Secure resolution: Env var > Existing Config > Interactive Secure Prompt)
+$patToUse = ""
+if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_PAT)) {
+    $patToUse = $env:GITHUB_PAT.Trim()
+    Write-Host "[INFO] Using GitHub PAT from environment variable GITHUB_PAT." -ForegroundColor Green
+} elseif ($null -ne $existingJson.mcpServers.github) {
+    $authHeader = $existingJson.mcpServers.github.headers.Authorization
+    if ($authHeader -and (-not $authHeader.Contains("YOUR_GITHUB_PAT"))) {
+        $patToUse = $authHeader.Replace("Bearer ", "").Trim()
+        Write-Host "[INFO] Preserved existing GitHub PAT from local configuration." -ForegroundColor Green
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($patToUse) -and (-not $NonInteractive)) {
+    Write-Host "[AUTH] GitHub MCP requires a Personal Access Token (PAT) for repository/PR access." -ForegroundColor Yellow
+    $secInput = Read-Host "Enter GitHub PAT [input masked, press Enter to skip]" -AsSecureString
+    if ($null -ne $secInput -and $secInput.Length -gt 0) {
+        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secInput)
+        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        if (-not [string]::IsNullOrWhiteSpace($plain)) {
+            $patToUse = $plain.Trim()
+            Write-Host "[INFO] GitHub PAT received securely." -ForegroundColor Green
+        }
+    }
+}
+
+# Merge all servers from template
+foreach ($prop in $templateJson.mcpServers.PSObject.Properties) {
+    $serverName = $prop.Name
+    $serverConfig = $prop.Value
+
+    # Replace PAT placeholder if available
+    if ($serverName -eq "github") {
+        if (-not [string]::IsNullOrWhiteSpace($patToUse)) {
+            $serverConfig.headers.Authorization = "Bearer $patToUse"
+        } else {
+            Write-Host "[INFO] GitHub PAT not provided. GitHub MCP will be set to 'Needs Authentication'." -ForegroundColor Yellow
+        }
+    }
+
+    if ($null -ne $existingJson.mcpServers.$serverName) {
+        $existingJson.mcpServers.$serverName = $serverConfig
+        Write-Host "[UPDATE] Updated MCP server: $serverName" -ForegroundColor Green
+    } else {
+        $existingJson.mcpServers | Add-Member -Name $serverName -Value $serverConfig -MemberType NoteProperty -Force
+        Write-Host "[NEW] Added MCP server: $serverName" -ForegroundColor Green
+    }
+}
+
+$jsonOut = $existingJson | ConvertTo-Json -Depth 10
+Set-ContentUtf8NoBom -Path $targetMcpConfig -Content $jsonOut
+Write-Host "[SUCCESS] MCP configuration saved to $targetMcpConfig (UTF-8 No-BOM)" -ForegroundColor Green
+
+# --- 2. Install Superpowers Plugin (Pinned Commit) ---
+Write-Host "`n--- Installing Superpowers Plugin ---" -ForegroundColor Cyan
+$pluginsDir = Join-Path $ConfigDir "plugins"
+$superpowersDir = Join-Path $pluginsDir "superpowers"
+$superpowersCommit = "b36e0829c6d0140e93cfef2ca599b1b07d4a7797"
+
+if (-not (Test-Path $pluginsDir)) {
+    New-Item -ItemType Directory -Path $pluginsDir -Force | Out-Null
+}
+
+if (Test-Path (Join-Path $superpowersDir ".git")) {
+    Write-Host "[UPDATE] Superpowers plugin exists. Checking out tested commit $superpowersCommit..." -ForegroundColor Gray
+    git -C $superpowersDir fetch --quiet origin
+    git -C $superpowersDir checkout --quiet $superpowersCommit
+} else {
+    Write-Host "[INSTALL] Cloning official obra/superpowers and checking out tested commit $superpowersCommit..." -ForegroundColor Yellow
+    git clone --quiet https://github.com/obra/superpowers.git $superpowersDir
+    git -C $superpowersDir checkout --quiet $superpowersCommit
+}
+Write-Host "[SUCCESS] Superpowers plugin pinned to $superpowersCommit at $superpowersDir" -ForegroundColor Green
+
+# --- 3. Apply Global Rules (GEMINI.md) ---
+Write-Host "`n--- Applying Global Rules (GEMINI.md) ---" -ForegroundColor Cyan
+$targetRules = Join-Path $ConfigDir "GEMINI.md"
+try {
+    $rulesContent = Get-Content $RulesSource -Raw -Encoding UTF8
+    Set-ContentUtf8NoBom -Path $targetRules -Content $rulesContent
+    Write-Host "[SUCCESS] Applied canonical rules to $targetRules (UTF-8 No-BOM)" -ForegroundColor Green
+} catch {
+    Write-Host "[INFO] $targetRules is protected by system boundary. Manual update may be required." -ForegroundColor Yellow
+}
+
+# --- 4. Optional Document CLI Tools ---
+if ($InstallMarkItDown) {
+    Write-Host "`n--- Installing MarkItDown CLI (Recommended) ---" -ForegroundColor Cyan
+    uv tool install "markitdown[all]==0.1.7" --force
+    Write-Host "[SUCCESS] MarkItDown 0.1.7 installed via uv tool." -ForegroundColor Green
+}
+
+if ($InstallMinerU) {
+    Write-Host "`n--- Installing MinerU Local CLI (Optional) ---" -ForegroundColor Cyan
+    Write-Host "[INFO] Installing mineru[pipeline]==3.4.5 with pinned transformers 4.57.6 and six..." -ForegroundColor Yellow
+    uv tool install "mineru[pipeline]==3.4.5" --with "transformers==4.57.6" --with six --force
+    Write-Host "[INFO] Running MinerU compatibility test..." -ForegroundColor Yellow
+    try {
+        $muVer = & mineru --version 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[SUCCESS] MinerU CLI installed: $($muVer.Trim())" -ForegroundColor Green
+        } else {
+            throw "Non-zero exit code: $LASTEXITCODE"
+        }
+    } catch {
+        Write-Warning "MinerU compatibility test failed: $_"
+        Write-Host "[MANUAL ACTION REQUIRED] MinerU on Windows requires environment-specific runtime compatibility." -ForegroundColor Yellow
+        Write-Host "Refer to docs/TOOL-WORKFLOW.md for known Windows runtime troubleshooting." -ForegroundColor Yellow
+    }
+}

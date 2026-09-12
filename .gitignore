@@ -1,0 +1,30 @@
+# Local configurations containing actual secrets
+mcp_config.json
+config.json
+secrets/
+.env
+.env.*
+.env.local
+
+# Sensitive customer documents & test reports
+*.pdf
+*.docx
+*.pptx
+*.xlsx
+*.csv
+
+# Backups
+*.backup
+*.backup.json
+*.bak
+
+# Runtime & Logs
+*.log
+.serena/
+.playwright-mcp/
+
+# Dependencies & OS artifacts
+node_modules/
+__pycache__/
+.DS_Store
+Thumbs.db

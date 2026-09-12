@@ -1,0 +1,61 @@
+{
+  "_comment": "Antigravity AI Agent MCP Configuration Template (Phase 5.1 Verified). Local MCPs are strictly pinned to tested releases/commits. Remote MCPs (context7, github) are externally managed cloud endpoints.",
+  "mcpServers": {
+    "serena": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena@701e7c843f46c6a649203a488cece1bf19f1df90",
+        "serena",
+        "start-mcp-server",
+        "--context=antigravity"
+      ]
+    },
+    "context7": {
+      "_note": "Externally managed remote service (Cloud API)",
+      "serverUrl": "https://mcp.context7.com/mcp"
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.80"
+      ]
+    },
+    "github": {
+      "_note": "Externally managed remote service (Copilot API)",
+      "serverUrl": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer YOUR_GITHUB_PAT",
+        "X-MCP-Toolsets": "context,repos,issues,pull_requests"
+      }
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@1.9.0",
+        "--headless"
+      ]
+    },
+    "semgrep": {
+      "command": "semgrep",
+      "args": [
+        "mcp"
+      ]
+    },
+    "docling": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "docling-mcp[local]==3.2.0",
+        "docling-mcp-server",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "DOCLING_MCP_CONVERSION_MODE": "local"
+      }
+    }
+  }
+}
