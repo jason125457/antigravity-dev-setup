@@ -1,0 +1,42 @@
+{
+  "harness-pre-tool-guard": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ./hooks/pre_tool_guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "harness-post-tool-guard": {
+    "enabled": true,
+    "PostToolUse": [
+      {
+        "matcher": "write_file|write_to_file|replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ./hooks/post_tool_guard.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "harness-stop-guard": {
+    "enabled": true,
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python ./hooks/stop_guard.py",
+        "timeout": 5
+      }
+    ]
+  }
+}

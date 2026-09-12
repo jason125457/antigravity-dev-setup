@@ -67,18 +67,26 @@ if ((-not $NonInteractive) -and (-not $DryRun) -and (-not $InstallDocumentTools)
     if ($ansMU -match "^[yY]") { $installMU = $true }
 }
 
-# 4. Install MCPs, Plugins, Rules & Doc Tools
-Write-Host "`n[Step 3/4] Installing Core MCPs, Plugins & Global Rules..." -ForegroundColor Cyan
+# 4. Install MCPs, Plugins, Rules, Skills & Hooks
+Write-Host "`n[Step 3/4] Installing Core MCPs, Plugins, Global Rules, Skills & Hooks..." -ForegroundColor Cyan
 if (-not $DryRun) {
     & "$scriptDir\scripts\install-mcp.ps1" `
         -InstallMarkItDown:$installMD `
         -InstallMinerU:$installMU `
         -NonInteractive:$NonInteractive
 } else {
+    $hooksDeployDir = "$env:USERPROFILE\.gemini\config\hooks\"
+    $skillsDeployDir = "$env:USERPROFILE\.gemini\config\skills\"
     Write-Host "[DRY-RUN] Would merge 7 MCPs with pinned versions to ~/.gemini/config/mcp_config.json (UTF-8 No-BOM)" -ForegroundColor Gray
     Write-Host "[DRY-RUN] Would clone/checkout obra/superpowers commit b36e082" -ForegroundColor Gray
     Write-Host "[DRY-RUN] Would apply GEMINI.md global rules (UTF-8 No-BOM)" -ForegroundColor Gray
     Write-Host "[DRY-RUN] GitHub PAT will be read from `$env:GITHUB_PAT or interactive secure prompt (no plaintext cli arg)" -ForegroundColor Gray
+    Write-Host "[DRY-RUN] Would deploy skills/project-bootstrap/ to $skillsDeployDir" -ForegroundColor Gray
+    Write-Host "[DRY-RUN] Would deploy skills/release-audit/    to $skillsDeployDir" -ForegroundColor Gray
+    Write-Host "[DRY-RUN] Would deploy hooks/*.py to $hooksDeployDir (absolute command paths)" -ForegroundColor Gray
+    Write-Host "[DRY-RUN] Would backup ~/.gemini/config/hooks.json to hooks.json.bak" -ForegroundColor Gray
+    Write-Host "[DRY-RUN] Would merge harness hook entries into ~/.gemini/config/hooks.json (safe — preserves existing user hooks)" -ForegroundColor Gray
+    Write-Host "[DRY-RUN] Project template available at: $scriptDir\templates\project-template\" -ForegroundColor Gray
     if ($installMD) { Write-Host "[DRY-RUN] Would install MarkItDown CLI 0.1.7 via uv tool" -ForegroundColor Gray }
     if ($installMU) { Write-Host "[DRY-RUN] Would install MinerU Local 3.4.5 via uv tool and run compatibility test" -ForegroundColor Gray }
 }
@@ -100,5 +108,12 @@ Next Steps:
 1. Restart Antigravity IDE / CLI to reload MCP servers and rules.
 2. Check Antigravity Customization Settings to confirm all 7 MCPs
    are active and connected.
+3. Global Skills deployed to: $env:USERPROFILE\.gemini\config\skills\
+   - project-bootstrap  (use when starting a new project)
+   - release-audit      (use before any release / PR)
+4. Project template available at:
+   $scriptDir\templates\project-template\
+   Copy to new project root or reference via project-bootstrap Skill.
 ===================================================================
 "@ -ForegroundColor Green
+

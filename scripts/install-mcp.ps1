@@ -1,15 +1,20 @@
 <#
 .SYNOPSIS
-    Installs MCP servers, Superpowers plugin, global rules, and optional document CLIs.
+    Installs MCP servers, Superpowers plugin, global rules, skills, hooks,
+    and optional document CLIs.
 #>
 [CmdletBinding()]
 param (
     [string]$ConfigDir = "$env:USERPROFILE\.gemini\config",
     [string]$TemplatePath = "",
     [string]$RulesSource = "",
+    [string]$SkillsSource = "",
+    [string]$HooksSource = "",
+    [string]$HooksJsonSource = "",
     [switch]$InstallMarkItDown,
     [switch]$InstallMinerU,
-    [switch]$NonInteractive
+    [switch]$NonInteractive,
+    [switch]$DryRun
 )
 
 function Set-ContentUtf8NoBom {
@@ -31,6 +36,103 @@ if ([string]::IsNullOrWhiteSpace($TemplatePath) -or (-not (Test-Path $TemplatePa
 }
 if ([string]::IsNullOrWhiteSpace($RulesSource) -or (-not (Test-Path $RulesSource))) {
     $RulesSource = Join-Path $repoRoot "config\GEMINI.md"
+}
+if ([string]::IsNullOrWhiteSpace($SkillsSource) -or (-not (Test-Path $SkillsSource))) {
+    $SkillsSource = Join-Path $repoRoot "skills"
+}
+if ([string]::IsNullOrWhiteSpace($HooksSource) -or (-not (Test-Path $HooksSource))) {
+    $HooksSource = Join-Path $repoRoot "hooks"
+}
+if ([string]::IsNullOrWhiteSpace($HooksJsonSource) -or (-not (Test-Path $HooksJsonSource))) {
+    $HooksJsonSource = Join-Path $repoRoot "config\hooks.json"
+}
+
+# --- Helper: Safe JSON merge for hooks.json ---
+# Merges source hook entries into the target hooks.json, preserving all existing
+# third-party / user hooks. Reports conflicts but never deletes unknown entries.
+function Merge-HooksJson {
+    param (
+        [string]$SourcePath,
+        [string]$TargetPath,
+        [string]$BackupPath,
+        [string]$HooksDir = ""
+    )
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+    if ([string]::IsNullOrWhiteSpace($HooksDir)) {
+        $HooksDir = Join-Path ([System.Environment]::GetFolderPath("UserProfile")) ".gemini\config\hooks"
+    }
+    $cleanHooksDir = $HooksDir.Replace("\", "/")
+
+    # Read source
+    $srcRaw = [System.IO.File]::ReadAllText($SourcePath, [System.Text.Encoding]::UTF8)
+    $srcJson = $srcRaw | ConvertFrom-Json
+
+    # Read or create target
+    $tgtJson = $null
+    if (Test-Path $TargetPath) {
+        # Backup first
+        [System.IO.File]::Copy($TargetPath, $BackupPath, $true)
+        Write-Host "[INFO] Backed up existing hooks.json to $BackupPath" -ForegroundColor Gray
+        try {
+            $tgtRaw = [System.IO.File]::ReadAllText($TargetPath, [System.Text.Encoding]::UTF8)
+            $tgtJson = $tgtRaw | ConvertFrom-Json
+        } catch {
+            Write-Host "[WARN] Existing hooks.json could not be parsed. Starting fresh from source." -ForegroundColor Yellow
+            $tgtJson = [PSCustomObject]@{}
+        }
+    } else {
+        $tgtJson = [PSCustomObject]@{}
+    }
+
+    # Merge: add/update source entries; preserve all others
+    foreach ($prop in $srcJson.PSObject.Properties) {
+        $hookId = $prop.Name
+        $hookVal = $prop.Value
+
+        # Rewrite command paths to absolute with forward slashes so CWD doesn't matter at runtime
+        foreach ($phase in @("PreToolUse", "PostToolUse", "Stop")) {
+            $phaseData = $hookVal.$phase
+            if ($null -eq $phaseData) { continue }
+            $items = if ($phaseData -is [System.Array]) { $phaseData } else { @($phaseData) }
+            foreach ($item in $items) {
+                $hooksArr = $item.hooks
+                if ($null -eq $hooksArr) { $hooksArr = @($item) }
+                foreach ($h in $hooksArr) {
+                    if ($h.command -match "\./hooks/(.+\.py)") {
+                        $scriptName = $Matches[1]
+                        $absPath = "$cleanHooksDir/$scriptName"
+                        $h.command = "python $absPath"
+                    }
+                }
+            }
+        }
+        # Also handle Stop array directly (no nested hooks key)
+        $stopData = $hookVal.Stop
+        if ($null -ne $stopData) {
+            $stopItems = if ($stopData -is [System.Array]) { $stopData } else { @($stopData) }
+            foreach ($item in $stopItems) {
+                if ($item.command -match "\./hooks/(.+\.py)") {
+                    $scriptName = $Matches[1]
+                    $absPath = "$cleanHooksDir/$scriptName"
+                    $item.command = "python $absPath"
+                }
+            }
+        }
+
+        if ($null -ne $tgtJson.$hookId) {
+            Write-Host "[CONFLICT] Hook entry '$hookId' already exists — updating with harness version." -ForegroundColor Yellow
+        }
+        if ($null -ne $tgtJson.PSObject.Properties[$hookId]) {
+            $tgtJson.PSObject.Properties.Remove($hookId)
+        }
+        $tgtJson | Add-Member -Name $hookId -Value $hookVal -MemberType NoteProperty -Force
+        Write-Host "[MERGE] Hook entry '$hookId' merged into global hooks.json" -ForegroundColor Green
+    }
+
+    $outJson = $tgtJson | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($TargetPath, $outJson, $utf8NoBom)
 }
 
 if (-not (Test-Path $ConfigDir)) {
@@ -144,7 +246,77 @@ try {
     Write-Host "[INFO] $targetRules is protected by system boundary. Manual update may be required." -ForegroundColor Yellow
 }
 
-# --- 4. Optional Document CLI Tools ---
+# --- 4. Deploy Global Skills ---
+Write-Host "`n--- Deploying Global Skills ---" -ForegroundColor Cyan
+$globalSkillsDir = Join-Path $ConfigDir "skills"
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Would copy skills/* to $globalSkillsDir (UTF-8 No-BOM preserved)" -ForegroundColor Gray
+} else {
+    if (-not (Test-Path $SkillsSource)) {
+        Write-Host "[WARN] Skills source directory not found: $SkillsSource" -ForegroundColor Yellow
+    } else {
+        if (-not (Test-Path $globalSkillsDir)) {
+            New-Item -ItemType Directory -Path $globalSkillsDir -Force | Out-Null
+        }
+        # Copy each skill subdirectory
+        Get-ChildItem -Path $SkillsSource -Directory | ForEach-Object {
+            $skillName = $_.Name
+            $destSkillDir = Join-Path $globalSkillsDir $skillName
+            if (-not (Test-Path $destSkillDir)) {
+                New-Item -ItemType Directory -Path $destSkillDir -Force | Out-Null
+            }
+            # Copy all files in the skill dir (SKILL.md etc.)
+            Get-ChildItem -Path $_.FullName -File | ForEach-Object {
+                $destFile = Join-Path $destSkillDir $_.Name
+                $content = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+                Set-ContentUtf8NoBom -Path $destFile -Content $content
+            }
+            Write-Host "[SUCCESS] Deployed skill '$skillName' to $destSkillDir" -ForegroundColor Green
+        }
+    }
+}
+
+# --- 5. Deploy Harness Hook Scripts & Merge hooks.json ---
+Write-Host "`n--- Deploying Harness Hooks ---" -ForegroundColor Cyan
+$globalHooksDir = Join-Path $ConfigDir "hooks"
+$globalHooksJson = Join-Path $ConfigDir "hooks.json"
+$hooksJsonBackup = Join-Path $ConfigDir "hooks.json.bak"
+
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Would copy hooks/*.py to $globalHooksDir with absolute paths in commands" -ForegroundColor Gray
+    Write-Host "[DRY-RUN] Would backup $globalHooksJson to $hooksJsonBackup" -ForegroundColor Gray
+    Write-Host "[DRY-RUN] Would merge harness entries (harness-pre-tool-guard, harness-post-tool-guard, harness-stop-guard) into $globalHooksJson" -ForegroundColor Gray
+    Write-Host "[DRY-RUN] All existing user/third-party hook entries preserved" -ForegroundColor Gray
+} else {
+    # 5a. Deploy Python scripts
+    if (-not (Test-Path $HooksSource)) {
+        Write-Host "[WARN] Hooks source directory not found: $HooksSource" -ForegroundColor Yellow
+    } else {
+        if (-not (Test-Path $globalHooksDir)) {
+            New-Item -ItemType Directory -Path $globalHooksDir -Force | Out-Null
+        }
+        Get-ChildItem -Path $HooksSource -Filter "*.py" | ForEach-Object {
+            $destFile = Join-Path $globalHooksDir $_.Name
+            $content = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+            Set-ContentUtf8NoBom -Path $destFile -Content $content
+            Write-Host "[SUCCESS] Deployed hook script '$($_.Name)' to $destFile" -ForegroundColor Green
+        }
+    }
+
+    # 5b. Merge hooks.json
+    if (-not (Test-Path $HooksJsonSource)) {
+        Write-Host "[WARN] Hooks JSON source not found: $HooksJsonSource" -ForegroundColor Yellow
+    } else {
+        try {
+            Merge-HooksJson -SourcePath $HooksJsonSource -TargetPath $globalHooksJson -BackupPath $hooksJsonBackup -HooksDir $globalHooksDir
+            Write-Host "[SUCCESS] hooks.json merged at $globalHooksJson (UTF-8 No-BOM)" -ForegroundColor Green
+        } catch {
+            Write-Host "[FAIL] hooks.json merge failed: $_" -ForegroundColor Red
+        }
+    }
+}
+
+# --- 6. Optional Document CLI Tools ---
 if ($InstallMarkItDown) {
     Write-Host "`n--- Installing MarkItDown CLI (Recommended) ---" -ForegroundColor Cyan
     uv tool install "markitdown[all]==0.1.7" --force

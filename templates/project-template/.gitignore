@@ -1,0 +1,23 @@
+# Machine and secret configurations
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+id_rsa
+credentials.json
+service-account.json
+
+# Local tool caches
+.serena/
+.playwright-mcp/
+node_modules/
+__pycache__/
+*.pyc
+
+# Temporary test logs and backups
+*.backup
+*.bak
+*.log
+scratch/

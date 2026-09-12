@@ -153,6 +153,66 @@ $status["MinerU Local"] = if ($hasMinerU) { "OK" } else { "Optional (Not Install
 $status["Superpowers"] = if (Test-Path $superpowersDir) { "OK" } else { "MISSING" }
 $status["Global Rules"] = if (Test-Path $rulesFile) { "OK" } else { "MISSING" }
 
+# --- Skills Verification ---
+$skillsDir = Join-Path $ConfigDir "skills"
+$bootstrapSkill = Join-Path $skillsDir "project-bootstrap\SKILL.md"
+$auditSkill     = Join-Path $skillsDir "release-audit\SKILL.md"
+$status["Project Bootstrap Skill"] = if (Test-Path $bootstrapSkill) { "OK" } else { "MISSING — run install.ps1" }
+$status["Release Audit Skill"]     = if (Test-Path $auditSkill)     { "OK" } else { "MISSING — run install.ps1" }
+
+# --- Hooks Verification ---
+$hooksDir         = Join-Path $ConfigDir "hooks"
+$preGuard         = Join-Path $hooksDir "pre_tool_guard.py"
+$postGuard        = Join-Path $hooksDir "post_tool_guard.py"
+$stopGuard        = Join-Path $hooksDir "stop_guard.py"
+$globalHooksJson  = Join-Path $ConfigDir "hooks.json"
+
+$status["pre_tool_guard.py"]  = if (Test-Path $preGuard)  { "OK" } else { "MISSING — run install.ps1" }
+$status["post_tool_guard.py"] = if (Test-Path $postGuard) { "OK" } else { "MISSING — run install.ps1" }
+$status["stop_guard.py"]      = if (Test-Path $stopGuard) { "OK" } else { "MISSING — run install.ps1" }
+
+# Check hooks.json has harness entries and their targets exist
+$harnessOk = $false
+$hookPathsOk = $true
+if (Test-Path $globalHooksJson) {
+    try {
+        $hooksContent = Get-Content $globalHooksJson -Raw -Encoding UTF8 | ConvertFrom-Json
+        $hasPreGuard  = $null -ne $hooksContent."harness-pre-tool-guard"
+        $hasPostGuard = $null -ne $hooksContent."harness-post-tool-guard"
+        $hasStopGuard = $null -ne $hooksContent."harness-stop-guard"
+        $harnessOk = $hasPreGuard -and $hasPostGuard -and $hasStopGuard
+        # Check that command targets actually exist on disk
+        $hooksContent.PSObject.Properties | ForEach-Object {
+            $hookDef = $_.Value
+            foreach ($phase in @("PreToolUse", "PostToolUse", "Stop")) {
+                $phaseData = $hookDef.$phase
+                if ($null -eq $phaseData) { continue }
+                $items = if ($phaseData -is [System.Array]) { $phaseData } else { @($phaseData) }
+                foreach ($item in $items) {
+                    $hooksArr = if ($null -ne $item.hooks) { $item.hooks } else { @($item) }
+                    foreach ($h in $hooksArr) {
+                        if ($null -ne $h.command) {
+                            # Extract path from: python "C:\path\to\script.py"
+                            if ($h.command -match 'python\s+"?([^"]+\.py)"?') {
+                                $scriptPath = $Matches[1].Trim()
+                                if (-not (Test-Path $scriptPath)) {
+                                    Write-Host ("[WARN] Hook command target not found: $scriptPath") -ForegroundColor Yellow
+                                    $hookPathsOk = $false
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } catch {
+        Write-Host "[WARN] Could not parse global hooks.json: $_" -ForegroundColor Yellow
+    }
+}
+$status["Harness Hooks (hooks.json)"] = if ($harnessOk) { "OK" } else { "MISSING entries — run install.ps1" }
+$status["Hook Paths (targets exist)"] = if ($hookPathsOk) { "OK" } else { "FAIL — some command targets missing" }
+
+
 Write-Host "`n===================================================" -ForegroundColor Cyan
 Write-Host "                Verification Summary" -ForegroundColor Cyan
 Write-Host "===================================================" -ForegroundColor Cyan
